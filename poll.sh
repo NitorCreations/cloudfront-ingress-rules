@@ -1,5 +1,15 @@
 #!/bin/bash -x
 
+if ! which jq > /dev/null; then
+  echo 'jq not installed'
+  exit 1
+fi
+
+if ! aws ec2 describe-account-attributes > /dev/null 2>&1 < /dev/null; then
+  echo 'AWS command-line tool not set up correctly'
+  exit 1
+fi
+
 SECURITY_GROUP="$1"
 if [ -z "$SECURITY_GROUP" ]; then
   echo "usage $0 security-group"
