@@ -1,12 +1,15 @@
 #!/bin/bash -x
 
+[ "$REGION" ] || REGION=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | grep region | awk -F\" '{print $4}')
+[ "$REGION" ] || REGION=$(aws --region $REGION configure list | grep region | awk '{ print $2 }')
+
 if ! which jq > /dev/null; then
   echo 'jq not installed'
   exit 1
 fi
 
-if ! aws ec2 describe-account-attributes > /dev/null 2>&1 < /dev/null; then
-  echo 'AWS command-line tool not set up correctly'
+if ! aws --region $REGION ec2 describe-account-attributes > /dev/null 2>&1 < /dev/null; then
+  echo 'aws --region $REGION command-line tool not set up correctly'
   exit 1
 fi
 
@@ -19,7 +22,7 @@ LIST_FILE=cloudfront-ip-ranges-$(date +%Y%m%d%H%M%S).txt
 
 sync_rules() {
   CURRENT_RULES=$(mktemp)
-  if ! aws ec2 describe-security-groups --group-ids $SECURITY_GROUP 2>&1 > $CURRENT_RULES.tmp; then
+  if ! aws --region $REGION ec2 describe-security-groups --group-ids $SECURITY_GROUP 2>&1 > $CURRENT_RULES.tmp; then
     echo "Failed to get security group info"
     rm -f $CURRENT_RULES.tmp
     exit 4
@@ -29,13 +32,13 @@ sync_rules() {
   for rule in $(cat $CURRENT_RULES); do
     if ! grep $rule $LIST_FILE > /dev/null; then
       echo "Cidr range $rule removed"
-      aws ec2 revoke-security-group-ingress --group-id $SECURITY_GROUP --protocol tcp --port 443 --cidr $rule
+      aws --region $REGION ec2 revoke-security-group-ingress --group-id $SECURITY_GROUP --protocol tcp --port 443 --cidr $rule
     fi
   done
   for rule in $(cat $LIST_FILE); do
     if ! grep $rule $CURRENT_RULES > /dev/null; then
       echo "Cidr range $rule missing"
-      aws ec2 authorize-security-group-ingress --group-id $SECURITY_GROUP --protocol tcp --port 443 --cidr $rule
+      aws --region $REGION ec2 authorize-security-group-ingress --group-id $SECURITY_GROUP --protocol tcp --port 443 --cidr $rule
     fi
   done
   rm -f $CURRENT_RULES
