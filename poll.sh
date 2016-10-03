@@ -1,7 +1,7 @@
-#!/bin/bash -x
+#!/bin/bash
 
 [ "$REGION" ] || REGION=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | grep region | awk -F\" '{print $4}')
-[ "$REGION" ] || REGION=$(aws --region $REGION configure list | grep region | awk '{ print $2 }')
+[ "$REGION" ] || REGION=$(aws configure list | grep region | awk '{ print $2 }')
 
 if ! which jq > /dev/null; then
   echo 'jq not installed'
@@ -18,8 +18,17 @@ if [ -z "$SECURITY_GROUP" ]; then
   echo "usage $0 security-group"
   exit 1
 fi
+shift
+PORTS="$@"
+if [ -z "$PORTS" ]; then
+  PORTS=443
+fi
 LIST_FILE=cloudfront-ip-ranges-$(date +%Y%m%d%H%M%S).txt
-
+containsElement () {
+  local e
+  for e in "${@:2}"; do [[ "$e" == "$1" ]] && return 0; done
+  return 1
+}
 sync_rules() {
   CURRENT_RULES=$(mktemp)
   if ! aws --region $REGION ec2 describe-security-groups --group-ids $SECURITY_GROUP 2>&1 > $CURRENT_RULES.tmp; then
@@ -27,19 +36,31 @@ sync_rules() {
     rm -f $CURRENT_RULES.tmp
     exit 4
   fi
-  cat $CURRENT_RULES.tmp | jq ".SecurityGroups[0].IpPermissions[0].IpRanges[].CidrIp" 2> /dev/null | cut -d'"' -f 2 | sort > $CURRENT_RULES
+  cat $CURRENT_RULES.tmp | jq -r '.SecurityGroups[0].IpPermissions[]|{Port:.FromPort, CidrIp: .IpRanges[].CidrIp}|"\(.CidrIp):\(.Port)"' 2> /dev/null | sort > $CURRENT_RULES
   rm -f $CURRENT_RULES.tmp
   for rule in $(cat $CURRENT_RULES); do
-    if ! grep $rule $LIST_FILE > /dev/null; then
+    CIDR=$(echo $rule | cut -d ":" -f1)
+    PORT=$(echo $rule | cut -d ":" -f2)
+    if ! grep $CIDR $LIST_FILE > /dev/null || ! containsElement $PORT $PORTS; then
       echo "Cidr range $rule removed"
-      aws --region $REGION ec2 revoke-security-group-ingress --group-id $SECURITY_GROUP --protocol tcp --port 443 --cidr $rule
+      if [ -z "$DRY_RUN" ]; then
+        aws --region $REGION ec2 revoke-security-group-ingress --group-id $SECURITY_GROUP --protocol tcp --port $PORT --cidr $rule
+      else
+        echo "Would run 'aws --region $REGION ec2 revoke-security-group-ingress --group-id $SECURITY_GROUP --protocol tcp --port $PORT --cidr $rule'"
+      fi
     fi
   done
   for rule in $(cat $LIST_FILE); do
-    if ! grep $rule $CURRENT_RULES > /dev/null; then
-      echo "Cidr range $rule missing"
-      aws --region $REGION ec2 authorize-security-group-ingress --group-id $SECURITY_GROUP --protocol tcp --port 443 --cidr $rule
-    fi
+    for PORT in $PORTS; do
+      if ! grep "$rule:$PORT" $CURRENT_RULES > /dev/null; then
+        echo "Cidr range $rule:$PORT missing"
+        if [ -z "$DRY_RUN" ]; then
+          aws --region $REGION ec2 authorize-security-group-ingress --group-id $SECURITY_GROUP --protocol tcp --port $PORT --cidr $rule
+        else
+          echo "Would run 'aws --region $REGION ec2 authorize-security-group-ingress --group-id $SECURITY_GROUP --protocol tcp --port $PORT --cidr $rule'"
+        fi
+      fi
+    done
   done
   rm -f $CURRENT_RULES
 }
